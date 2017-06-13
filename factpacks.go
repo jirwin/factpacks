@@ -163,6 +163,12 @@ func (fs *lockingFactStore) Serialize() ([]byte, error) {
 
 func (fs *lockingFactStore) Load(facts []byte) error {
 	factStore := &FactStore{}
+
+	if facts == nil {
+		factStore.Facts = make(map[string]*Fact)
+		return nil
+	}
+
 	err := proto.Unmarshal(facts, factStore)
 	if err != nil {
 		log.WithField("err", err).Error("Error loading facts.")
