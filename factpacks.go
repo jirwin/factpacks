@@ -112,7 +112,7 @@ func (fs *lockingFactStore) LoadFactPack(filename string) error {
 	return nil
 }
 
-func (fs *lockingFactStore) HumanFactSet(line string) {
+func (fs *lockingFactStore) HumanFactSet(line string) bool {
 	var parts []string
 	var isPlural bool
 	if singularVerb.MatchString(line) {
@@ -125,7 +125,7 @@ func (fs *lockingFactStore) HumanFactSet(line string) {
 
 	if len(parts) != 2 {
 		log.Debug("There isn't enough information to parse a line.")
-		return
+		return false
 	}
 
 	fs.SetFact(&Fact{
@@ -133,14 +133,24 @@ func (fs *lockingFactStore) HumanFactSet(line string) {
 		Value:    strings.TrimSpace(parts[1]),
 		IsPlural: isPlural,
 	})
+
+	return true
 }
 
-func (fs *lockingFactStore) HumanFactForget(line string) {
+func (fs *lockingFactStore) HumanFactForget(line string) bool {
 	parts := forget.Split(line, 3)
 	if len(parts) != 2 {
-		return
+		return false
 	}
-	fs.DeleteFact(strings.TrimSpace(parts[1]))
+
+	name := strings.TrimSpace(parts[1])
+
+	if fs.GetFact(name) != nil {
+		fs.DeleteFact(name)
+		return true
+	}
+
+	return false
 }
 
 func (fs *lockingFactStore) HumanProcess(line string) {
