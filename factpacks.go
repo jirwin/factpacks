@@ -176,6 +176,18 @@ func (fs *lockingFactStore) Load(facts []byte) error {
 	return nil
 }
 
+func (fs *lockingFactStore) LookupFact(name string) string {
+	fs.factsMtx.RLock()
+	defer fs.factsMtx.RUnlock()
+
+	fact := fs.GetFact(name)
+	if fact == nil {
+		return ""
+	}
+
+	return fact.Output()
+}
+
 func MakeFactStore() *lockingFactStore {
 	fs := &FactStore{}
 	fs.Facts = make(map[string]*Fact)
