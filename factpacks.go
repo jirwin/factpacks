@@ -1,3 +1,4 @@
+//go:generate protoc --go_out=. factpacks.proto
 package factpacks
 
 import (
@@ -11,69 +12,57 @@ import (
 	"io"
 
 	log "github.com/Sirupsen/logrus"
+	"github.com/golang/protobuf/proto"
 )
 
 var singularSep = regexp.MustCompile(`\s=>\s`)
 var pluralSep = regexp.MustCompile(`\s->\s`)
 var singularVerb = regexp.MustCompile(`\sis\s`)
 var pluralVerb = regexp.MustCompile(`\sare\s`)
-
-type Fact struct {
-	name     string
-	value    string
-	isPlural bool
-}
+var forget = regexp.MustCompile(`\bforget\s`)
 
 func (f *Fact) Output() string {
 	var verb string
-	if f.isPlural {
+	if f.IsPlural {
 		verb = "are"
 	} else {
 		verb = "is"
 	}
 
-	return fmt.Sprintf("%s %s %s", f.name, verb, f.value)
+	return fmt.Sprintf("%s %s %s", f.Name, verb, f.Value)
 }
 
-type FactStore interface {
-	LoadFactPack(filename string) error
-	SetFact(fact *Fact)
-	GetFact(name string) *Fact
-	DeleteFact(name string)
-	HumanFactSet(fact string)
+type lockingFactStore struct {
+	factStore *FactStore
+	factsMtx  sync.RWMutex
 }
 
-type factStore struct {
-	facts    map[string]*Fact
-	factsMtx sync.RWMutex
-}
-
-func (fs *factStore) SetFact(fact *Fact) {
+func (fs *lockingFactStore) SetFact(fact *Fact) {
 	fs.factsMtx.Lock()
 	defer fs.factsMtx.Unlock()
 
-	fs.facts[fact.name] = fact
+	fs.factStore.Facts[fact.Name] = fact
 }
 
-func (fs *factStore) GetFact(name string) *Fact {
+func (fs *lockingFactStore) GetFact(name string) *Fact {
 	fs.factsMtx.RLock()
 	defer fs.factsMtx.RUnlock()
 
-	if val, ok := fs.facts[name]; ok {
+	if val, ok := fs.factStore.Facts[name]; ok {
 		return val
 	}
 
 	return nil
 }
 
-func (fs *factStore) DeleteFact(name string) {
+func (fs *lockingFactStore) DeleteFact(name string) {
 	fs.factsMtx.Lock()
 	defer fs.factsMtx.Unlock()
 
-	delete(fs.facts, name)
+	delete(fs.factStore.Facts, name)
 }
 
-func (fs *factStore) LoadFactPack(filename string) error {
+func (fs *lockingFactStore) LoadFactPack(filename string) error {
 	f, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -114,40 +103,83 @@ func (fs *factStore) LoadFactPack(filename string) error {
 		}
 
 		fs.SetFact(&Fact{
-			name:     name,
-			value:    fact,
-			isPlural: isPlural,
+			Name:     name,
+			Value:    fact,
+			IsPlural: isPlural,
 		})
 	}
 
 	return nil
 }
 
-func (fs *factStore) HumanFactSet(fact string) {
+func (fs *lockingFactStore) HumanFactSet(line string) {
 	var parts []string
 	var isPlural bool
-	if singularVerb.MatchString(fact) {
-		parts = singularVerb.Split(fact, 2)
+	if singularVerb.MatchString(line) {
+		parts = singularVerb.Split(line, 2)
 		isPlural = false
-	} else if pluralVerb.MatchString(fact) {
-		parts = pluralVerb.Split(fact, 2)
+	} else if pluralVerb.MatchString(line) {
+		parts = pluralVerb.Split(line, 2)
 		isPlural = true
 	}
 
 	if len(parts) != 2 {
-		log.Debug("There isn't enough information to parse a fact.")
+		log.Debug("There isn't enough information to parse a line.")
 		return
 	}
 
 	fs.SetFact(&Fact{
-		name:     strings.TrimSpace(parts[0]),
-		value:    strings.TrimSpace(parts[1]),
-		isPlural: isPlural,
+		Name:     strings.TrimSpace(parts[0]),
+		Value:    strings.TrimSpace(parts[1]),
+		IsPlural: isPlural,
 	})
 }
 
-func MakeFactStore() FactStore {
-	return &factStore{
-		facts: make(map[string]*Fact),
+func (fs *lockingFactStore) HumanFactForget(line string) {
+	parts := forget.Split(line, 3)
+	if len(parts) != 2 {
+		return
+	}
+	fs.DeleteFact(strings.TrimSpace(parts[1]))
+}
+
+func (fs *lockingFactStore) HumanProcess(line string) {
+	fs.HumanFactSet(line)
+	fs.HumanFactForget(line)
+}
+
+func (fs *lockingFactStore) Serialize() ([]byte, error) {
+	fs.factsMtx.RLock()
+	defer fs.factsMtx.RUnlock()
+
+	out, err := proto.Marshal(fs.factStore)
+	if err != nil {
+		log.WithField("err", err).Error("Unable to marshal factstore.")
+		return nil, err
+	}
+
+	return out, nil
+}
+
+func (fs *lockingFactStore) Load(facts []byte) error {
+	factStore := &FactStore{}
+	err := proto.Unmarshal(facts, factStore)
+	if err != nil {
+		log.WithField("err", err).Error("Error loading facts.")
+		return err
+	}
+
+	fs.factsMtx.Lock()
+	defer fs.factsMtx.Unlock()
+	fs.factStore = factStore
+
+	return nil
+}
+
+func MakeFactStore() *lockingFactStore {
+	fs := &FactStore{}
+	fs.Facts = make(map[string]*Fact)
+	return &lockingFactStore{
+		factStore: fs,
 	}
 }
